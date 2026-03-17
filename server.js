@@ -11,7 +11,8 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization"]
 };
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+// Express v5 + path-to-regexp does not accept "*" here
+app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
