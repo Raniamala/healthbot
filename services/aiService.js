@@ -1,16 +1,99 @@
+function buildPrompt(message) {
+  return `
+You are a cautious healthcare assistant.
+Provide basic guidance only.
+Do NOT diagnose diseases.
+Do NOT prescribe medication.
+Base advice on general public health guidance (WHO/CDC-style), and include clear "seek urgent care" red flags when appropriate.
+Keep the answer simple and clean (no markdown).
+
+User symptoms: ${message}
+
+Return:
+1) Possible causes (high-level, non-diagnostic)
+2) Self-care steps
+3) When to see a doctor
+4) When to seek urgent/emergency care
+`;
+}
+
+async function hfTextGeneration({ model, inputs, accessToken }) {
+  const res = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      inputs,
+      parameters: {
+        max_new_tokens: 256,
+        temperature: 0.4,
+        top_p: 0.9,
+        do_sample: true,
+        return_full_text: false
+      }
+    })
+  });
+
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!res.ok) {
+    const msg = typeof data === "string" ? data : data?.error || data?.message || `HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+
+  // Common shapes:
+  // - [{ generated_text: "..." }]
+  // - { generated_text: "..." }
+  if (Array.isArray(data) && typeof data?.[0]?.generated_text === "string") return data[0].generated_text;
+  if (data && typeof data.generated_text === "string") return data.generated_text;
+
+  // Some models may return plain string
+  if (typeof data === "string") return data;
+
+  return JSON.stringify(data);
+}
+
 async function getHealthAdvice(message) {
-  // To keep Render deployment lightweight and avoid timeouts/OOM,
-  // use a simple rules-based response in production.
+  // Production: call HF Serverless Inference (AI response, lightweight backend).
   if (process.env.NODE_ENV === "production") {
-    return (
-      "Here is some general guidance based on the symptoms you described.\n\n" +
-      `Your symptoms: ${message}\n\n` +
-      "1) This chatbot cannot diagnose or prescribe. It can only give basic information.\n" +
-      "2) If you have very high fever, difficulty breathing, chest pain, confusion, or feel very unwell, go to emergency care or call local emergency services.\n" +
-      "3) For mild fever, many people rest, drink plenty of fluids, and use over‑the‑counter fever medicines if they are normally safe for them.\n" +
-      "4) If symptoms last more than a few days, get worse instead of better, or you have other medical problems (like heart disease, lung disease, pregnancy, or a weak immune system), see a doctor as soon as possible.\n" +
-      "Always follow advice from a licensed doctor or your local health authority. This chatbot is only for basic information."
-    );
+    const token = process.env.HF_TOKEN;
+    if (!token) {
+      throw new Error("HF_TOKEN is not set (required in production)");
+    }
+
+    const prompt = buildPrompt(message);
+
+    // Prefer instruction-tuned text2text model for safer formatting.
+    // If the first model is loading/unavailable, fallback to an alternate.
+    const candidates = [
+      "google/flan-t5-base",
+      "google/flan-t5-large"
+    ];
+
+    let lastErr;
+    for (const model of candidates) {
+      try {
+        return await hfTextGeneration({ model, inputs: prompt, accessToken: token });
+      } catch (e) {
+        lastErr = e;
+        // If model is loading, bubble up a clean error so frontend can retry.
+        if (e?.status === 503) {
+          throw e;
+        }
+      }
+    }
+    throw lastErr || new Error("HF inference failed");
   }
 
   // Local development: keep using the SmolLM2 model via transformers.js
