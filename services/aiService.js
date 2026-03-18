@@ -1,27 +1,38 @@
-// Use SmolLM2-135M-Instruct locally via transformers.js
-const MODEL_ID = "HuggingFaceTB/SmolLM2-135M-Instruct";
+async function getHealthAdvice(message) {
+  // To keep Render deployment lightweight and avoid timeouts/OOM,
+  // use a simple rules-based response in production.
+  if (process.env.NODE_ENV === "production") {
+    return (
+      "Here is some general guidance based on the symptoms you described.\n\n" +
+      `Your symptoms: ${message}\n\n` +
+      "1) This chatbot cannot diagnose or prescribe. It can only give basic information.\n" +
+      "2) If you have very high fever, difficulty breathing, chest pain, confusion, or feel very unwell, go to emergency care or call local emergency services.\n" +
+      "3) For mild fever, many people rest, drink plenty of fluids, and use over‑the‑counter fever medicines if they are normally safe for them.\n" +
+      "4) If symptoms last more than a few days, get worse instead of better, or you have other medical problems (like heart disease, lung disease, pregnancy, or a weak immune system), see a doctor as soon as possible.\n" +
+      "Always follow advice from a licensed doctor or your local health authority. This chatbot is only for basic information."
+    );
+  }
 
-let generatorPromise = null;
+  // Local development: keep using the SmolLM2 model via transformers.js
+  const MODEL_ID = "HuggingFaceTB/SmolLM2-135M-Instruct";
+  let generatorPromise = global.__healthbotGeneratorPromise;
 
-async function getGenerator() {
   if (!generatorPromise) {
     generatorPromise = (async () => {
       const { pipeline } = await import("@huggingface/transformers");
-      // Create a text-generation/chat pipeline; weights will be downloaded & cached locally.
       return pipeline("text-generation", MODEL_ID);
     })();
+    // cache on global so dev hot-reloads reuse it
+    global.__healthbotGeneratorPromise = generatorPromise;
   }
-  return generatorPromise;
-}
 
-async function getHealthAdvice(message) {
-  const generator = await getGenerator();
+  const generator = await generatorPromise;
 
   const messages = [
     {
       role: "system",
       content:
-        "You are a cautious healthcare assistant. Provide only general information based on public WHO and CDC guidance. Do NOT diagnose, do NOT prescribe, and always recommend seeing a qualified doctor for serious or uncertain symptoms.Rules:No repetition,No markdown symbols like ** or * or +, Keep it simple and clean"
+        "You are a cautious healthcare assistant. Provide only general information based on public WHO and CDC guidance. Do NOT diagnose, do NOT prescribe, and always recommend seeing a qualified doctor for serious or uncertain symptoms. Rules: No repetition, no markdown symbols like ** or * or +, keep it simple and clean."
     },
     {
       role: "user",
@@ -34,7 +45,6 @@ async function getHealthAdvice(message) {
     temperature: 0.4,
     top_p: 0.9
   });
-
 
   const turn = output?.[0]?.generated_text?.at(-1);
   const text =
